@@ -33,7 +33,8 @@ HANDS = {
 }
 
 # ゲーム設定
-MAX_ROUNDS = 5 # 5回戦
+MAX_ROUNDS = 5 # 5回戦 (今回はスコアで終了するため、この値は「最大ラウンド」として機能します)
+WINNING_SCORE = 1 # 勝敗を決めるスコア
 
 # --- セッションステートの初期化 ---
 if 'player_side' not in st.session_state:
@@ -56,6 +57,10 @@ if 'last_player_card' not in st.session_state:
     st.session_state.last_player_card = None
 if 'last_ai_card' not in st.session_state:
     st.session_state.last_ai_card = None
+if 'countdown_active' not in st.session_state:
+    st.session_state.countdown_active = False
+if 'display_round_result' not in st.session_state:
+    st.session_state.display_round_result = False
 
 
 # --- ヘルパー関数 ---
@@ -71,6 +76,8 @@ def reset_game():
     st.session_state.round_result_message = ""
     st.session_state.last_player_card = None
     st.session_state.last_ai_card = None
+    st.session_state.countdown_active = False
+    st.session_state.display_round_result = False
     st.rerun()
 
 def get_hand_display(hand_dict):
@@ -82,76 +89,80 @@ def get_hand_display(hand_dict):
     return display_str.strip()
 
 def ai_choose_card(ai_current_hand, player_side):
-    """AIがカードを選択するロジック（簡易版）"""
+    """AIがカードを選択するロジック（市民を選ぶ確率を少し上げた版）"""
     available_cards = [card for card, count in ai_current_hand.items() if count > 0]
 
-    # AIの役割に応じて戦略を少し変える
-    if player_side == "皇帝側": # AIは奴隷側
-        # 奴隷側は皇帝に勝つ奴隷カードを温存しつつ市民を消費
-        if SLAVE in available_cards and ai_current_hand[SLAVE] > 0 and st.session_state.current_round >= MAX_ROUNDS - 1: # 終盤で奴隷を出す
-             return SLAVE
-        if CITIZEN in available_cards and ai_current_hand[CITIZEN] > 0:
-            return CITIZEN
-        if SLAVE in available_cards and ai_current_hand[SLAVE] > 0: # 市民がない場合、奴隷を出す
-            return SLAVE
+    if not available_cards:
+        return None
 
-    else: # AIは皇帝側
-        # 皇帝側は奴隷に負ける皇帝カードを温存しつつ市民を消費
-        if EMPEROR in available_cards and ai_current_hand[EMPEROR] > 0 and st.session_state.current_round >= MAX_ROUNDS - 1: # 終盤で皇帝を出す
-             return EMPEROR
-        if CITIZEN in available_cards and ai_current_hand[CITIZEN] > 0:
-            return CITIZEN
-        if EMPEROR in available_cards and ai_current_hand[EMPEROR] > 0: # 市民がない場合、皇帝を出す
-            return EMPEROR
+    # 市民を選ぶための重み付きリストを作成
+    weighted_choices = []
+    for card, count in ai_current_hand.items():
+        if count > 0:
+            if card == CITIZEN:
+                # 市民カードの確率を高くする（例: 3倍の重み）
+                weighted_choices.extend([card] * (count * 3))
+            else:
+                weighted_choices.extend([card] * count)
+    
+    # 重み付きリストからランダムに選択
+    if weighted_choices:
+        return random.choice(weighted_choices)
+    else:
+        # 万が一weighted_choicesが空になった場合（理論上は起こらないはずですが念のため）
+        return random.choice(available_cards)
 
-    # どれもなければ残ってるカードからランダム
-    return random.choice(available_cards)
-
-
-def play_round(player_card):
-    """1ラウンドのゲームをプレイする"""
+def play_round_logic(player_card):
+    """1ラウンドのゲームのロジックを実行する（UI更新は含まない）"""
     st.session_state.last_player_card = player_card
     
-    # AIがカードを選択
     ai_card = ai_choose_card(st.session_state.ai_hand, st.session_state.player_side)
+    
+    if ai_card is None:
+        st.session_state.round_result_message = "AIがカードを出せなくなりました。ゲームをリセットしてください。"
+        st.session_state.game_started = False
+        st.session_state.display_round_result = True
+        return
+
     st.session_state.last_ai_card = ai_card
 
-    # 手札から使用したカードを減らす
     st.session_state.player_hand[player_card] -= 1
     st.session_state.ai_hand[ai_card] -= 1
 
-    player_result = RULES[player_card][ai_card] # プレイヤー視点での結果
+    player_result = RULES[player_card][ai_card]
 
-    outcome_message = ""
-    if player_result == 1:
-        st.session_state.player_score += 1
-        outcome_message = "あなたの勝ち！🎊"
-    elif player_result == -1:
-        st.session_state.ai_score += 1
-        outcome_message = "AIの勝ち！💀"
-    else:
-        outcome_message = "引き分け！🤝"
-    
-    # 役割に応じたメッセージ
     if st.session_state.player_side == "皇帝側":
         if player_result == 1:
-            outcome_message = "皇帝側の勝利！🎊"
+            st.session_state.player_score += 1
+            outcome_message_side = "皇帝側の勝利！🎊"
         elif player_result == -1:
-            outcome_message = "奴隷側の勝利！💀"
+            st.session_state.ai_score += 1
+            outcome_message_side = "奴隷側の勝利！💀"
+        else:
+            outcome_message_side = "引き分け！🤝"
     else: # プレイヤーは奴隷側
         if player_result == 1:
-            outcome_message = "奴隷側の勝利！🎊"
+            st.session_state.player_score += 1
+            outcome_message_side = "奴隷側の勝利！🎊"
         elif player_result == -1:
-            outcome_message = "皇帝側の勝利！💀"
+            st.session_state.ai_score += 1
+            outcome_message_side = "皇帝側の勝利！💀"
+        else:
+            outcome_message_side = "引き分け！🤝"
 
-    st.session_state.round_result_message = f"あなたは **{player_card}**、AIは **{ai_card}** を出しました。{outcome_message}"
+    st.session_state.round_result_message = f"あなたは **{player_card}**、AIは **{ai_card}** を出しました。{outcome_message_side}"
     st.session_state.current_round += 1
+    
+    st.session_state.display_round_result = True
 
-    if st.session_state.current_round >= MAX_ROUNDS:
-        st.session_state.game_started = False # ゲーム終了
-        
-    st.rerun() # UIを更新
-
+def proceed_to_next_round():
+    """次のラウンドへ進む、またはゲームを終了する"""
+    st.session_state.display_round_result = False
+    if st.session_state.player_score >= WINNING_SCORE or \
+       st.session_state.ai_score >= WINNING_SCORE or \
+       st.session_state.current_round >= MAX_ROUNDS:
+        st.session_state.game_started = False
+    st.rerun()
 
 # --- UIの構築 ---
 
@@ -166,9 +177,11 @@ if not st.session_state.game_started:
             st.session_state.player_hand = HANDS["皇帝側"].copy()
             st.session_state.ai_hand = HANDS["奴隷側"].copy()
             st.session_state.game_started = True
+            st.session_state.countdown_active = True
             st.session_state.current_round = 0
             st.session_state.player_score = 0
             st.session_state.ai_score = 0
+            st.session_state.display_round_result = False
             st.rerun()
     with col_slave:
         if st.button("奴隷側を選ぶ⛓️", use_container_width=True):
@@ -177,32 +190,61 @@ if not st.session_state.game_started:
             st.session_state.player_hand = HANDS["奴隷側"].copy()
             st.session_state.ai_hand = HANDS["皇帝側"].copy()
             st.session_state.game_started = True
+            st.session_state.countdown_active = True
             st.session_state.current_round = 0
             st.session_state.player_score = 0
             st.session_state.ai_score = 0
+            st.session_state.display_round_result = False
             st.rerun()
 else: # ゲーム進行中
-    st.header(f"--- 第 {st.session_state.current_round + 1} 回戦 ---")
-    st.subheader(f"あなたの役割: {st.session_state.player_side}")
-
-    # スコア表示
-    st.markdown(f"**スコア**: あなた ({st.session_state.player_side}): {st.session_state.player_score} vs AI ({st.session_state.ai_side}): {st.session_state.ai_score}")
-
-    # 手札表示
-    st.subheader("あなたの手札:")
-    st.write(get_hand_display(st.session_state.player_hand))
-
-    # AIの手札表示 (デバッグ用またはヒントとして)
-    # st.sidebar.subheader("AIの手札 (デバッグ用):")
-    # st.sidebar.write(get_hand_display(st.session_state.ai_hand))
-
-    # 直前の対戦結果
-    if st.session_state.round_result_message:
+    if st.session_state.countdown_active:
+        st.subheader("ゲーム開始までお待ちください...")
+        countdown_placeholder = st.empty()
+        for i in range(3, 0, -1):
+            countdown_placeholder.markdown(f"## **{i}**")
+            time.sleep(1)
+        countdown_placeholder.markdown("## **勝負！**")
+        time.sleep(0.5)
+        st.session_state.countdown_active = False
+        st.rerun()
+    elif st.session_state.display_round_result:
+        st.header(f"--- 第 {st.session_state.current_round} 回戦 結果 ---")
+        st.subheader(f"あなたの役割: {st.session_state.player_side}")
+        st.markdown(f"**スコア**: あなた ({st.session_state.player_side}): {st.session_state.player_score} vs AI ({st.session_state.ai_side}): {st.session_state.ai_score}")
         st.info(st.session_state.round_result_message)
-        if st.session_state.last_player_card and st.session_state.last_ai_card:
-             st.write(f"前回のあなたの手: {st.session_state.last_player_card}, 前回のAIの手: {st.session_state.last_ai_card}")
+        st.write(f"前回のあなたの手: {st.session_state.last_player_card}, 前回のAIの手: {st.session_state.last_ai_card}")
 
-    if st.session_state.current_round < MAX_ROUNDS:
+        if st.session_state.player_score >= WINNING_SCORE or \
+           st.session_state.ai_score >= WINNING_SCORE or \
+           st.session_state.current_round >= MAX_ROUNDS:
+            st.header("--- ゲーム終了！ ---")
+            if st.session_state.player_score > st.session_state.ai_score:
+                winning_side = st.session_state.player_side
+                st.balloons()
+                st.success(f"🎉 **{winning_side}** の勝利です！ 🎉")
+                st.write(f"最終スコア: あなた ({st.session_state.player_side}): {st.session_state.player_score} vs AI ({st.session_state.ai_side}): {st.session_state.ai_score}")
+            elif st.session_state.player_score < st.session_state.ai_score:
+                winning_side = st.session_state.ai_side
+                st.error(f"残念... **{winning_side}** の勝利です。💀")
+                st.write(f"最終スコア: あなた ({st.session_state.player_side}): {st.session_state.player_score} vs AI ({st.session_state.ai_side}): {st.session_state.ai_score}")
+                st.image("https://media.tenor.com/images/30b91e92c286d9c614b80a373b526685/tenor.gif", caption="ざわ…ざわ…", width=200)
+            else:
+                st.warning(f"引き分けです！🤝")
+                st.write(f"最終スコア: あなた ({st.session_state.player_side}): {st.session_state.player_score} vs AI ({st.session_state.ai_side}): {st.session_state.ai_score}")
+            st.button("もう一度プレイする", on_click=reset_game, type="primary")
+        else:
+            st.button("次のラウンドへ！", on_click=proceed_to_next_round, type="primary")
+    else: # ゲーム継続中 (カウントダウンもラウンド結果表示も終了)
+        st.header(f"--- 第 {st.session_state.current_round + 1} 回戦 ---")
+        st.subheader(f"あなたの役割: {st.session_state.player_side}")
+
+        # スコア表示
+        st.markdown(f"**スコア**: あなた ({st.session_state.player_side}): {st.session_state.player_score} vs AI ({st.session_state.ai_side}): {st.session_state.ai_score}")
+
+        # 手札表示
+        st.subheader("あなたの手札:")
+        st.write(get_hand_display(st.session_state.player_hand))
+
         st.subheader("カードを選択してください:")
         
         cols = st.columns(len(st.session_state.player_hand))
@@ -213,23 +255,10 @@ else: # ゲーム進行中
             if card in available_cards_to_play:
                 with cols[i]:
                     if st.button(f"出す: {card}", key=f"play_{card}"):
-                        play_round(card)
+                        play_round_logic(card)
             else:
                 with cols[i]:
                     st.button(f"出す: {card}", key=f"play_{card}_disabled", disabled=True)
-
-    else: # ゲーム終了
-        st.header("--- ゲーム終了！ ---")
-        if st.session_state.player_score > st.session_state.ai_score:
-            st.balloons()
-            st.success(f"🥳 あなた ({st.session_state.player_side}) の勝利です！ {st.session_state.player_score} 対 {st.session_state.ai_score} 🥳")
-        elif st.session_state.player_score < st.session_state.ai_score:
-            st.error(f"残念... AI ({st.session_state.ai_side}) の勝利です。 {st.session_state.player_score} 対 {st.session_state.ai_score} 💀")
-            st.image("https://media.tenor.com/images/30b91e92c286d9c614b80a373b526685/tenor.gif", caption="ざわ…ざわ…", width=200) # カイジ感出すためのGIF
-        else:
-            st.warning(f"引き分けです！ {st.session_state.player_score} 対 {st.session_state.ai_score} 🤝")
-
-        st.button("もう一度プレイする", on_click=reset_game, type="primary")
 
 st.markdown("---")
 st.markdown("© 2024 カイジ Eカードアプリ (Inspired by Kaiji Ultimate Survivor)")
